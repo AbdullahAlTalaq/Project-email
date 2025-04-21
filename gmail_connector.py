@@ -1,6 +1,8 @@
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from email.mime.text import MIMEText
+from google.auth.transport.requests import Request
 import base64
 import os
 
@@ -29,7 +31,16 @@ class GmailConnector:
     def is_authenticated(self):
         return self.service is not None
 
-
+    def send_email(self, to: str, subject: str, body: str) -> dict:
+        if not self.service:
+            raise RuntimeError("Service not initialized. Call authenticate() first.")
+        message = MIMEText(body)
+        message['to'] = to
+        message['subject'] = subject
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        create_message = {'raw': raw_message}
+        sent_msg = self.service.users().messages().send(userId="me", body=create_message).execute()
+        return sent_msg
 
 
 '''
@@ -46,6 +57,24 @@ def main():
     if gmail.is_authenticated():
 
 
+
+from llama_index.tools import FunctionTool
+
+def send_email_tool(to: str, subject: str, body: str) -> str:
+    """Send an email via Gmail API using GmailConnector."""
+    try:
+        gmail = GmailConnector()
+        gmail.authenticate()
+        result = gmail.send_email(to=to, subject=subject, body=body)
+        return f"✅ Email sent to {to}. Message ID: {result['id']}"
+    except Exception as e:
+        return f"❌ Error sending email: {str(e)}"
+
+send_email_llama_tool = FunctionTool.from_defaults(
+    fn=send_email_tool,
+    name="send_email_tool",
+    description="Send an email. Inputs: to, subject, body."
+)
 
 '''
 
