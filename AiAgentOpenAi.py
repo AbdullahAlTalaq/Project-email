@@ -1,95 +1,76 @@
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-import base64
-import os
-import openai
+from agents import Agent, Runner, OpenAIChatCompletionsModel, AsyncOpenAI ,set_tracing_disabled , ModelSettings, function_tool
+from GmailEmailSender import GmailEmailSender
+import asyncio
+# Configure the model
+model = OpenAIChatCompletionsModel( 
+    model="yasserrmd/Qwen2.5-7B-Instruct-1M",
+    openai_client=AsyncOpenAI(base_url="http://localhost:11434/v1",api_key="ollama")
+    
+)
+#############
+
+##################
+# Create the agent
 
 
-openai.api_key = "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"
-
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-
-def get_email_body(payload):
-    """Extract plain text body from the email payload."""
-    if 'parts' in payload:
-        for part in payload['parts']:
-            if part['mimeType'] == 'text/plain':
-                data = part['body'].get('data')
-                if data:
-                    return base64.urlsafe_b64decode(data).decode('utf-8')
-    else:
-        data = payload['body'].get('data')
-        if data:
-            return base64.urlsafe_b64decode(data).decode('utf-8')
-    return 'No Body Found'
-
-def summarize_with_gpt(subject, sender, date, body):
-    prompt = f"""
-You are an assistant. Read the following email and provide:
-1. A short summary of what the email is about.
-2. A suggested reply in a professional tone.
-
-Email Details:
-Subject: {subject}
-From: {sender}
-Date: {date}
-Body:
-{body}
-"""
-
+@function_tool  
+def Sent_Email(receiver:str,email_subject:str,message_body:str ) -> str:
+    
+    """This tool is for sending email. 
+    Args:
+    receiver: This argument contains the recipient's email address. 
+    message_body: This argument contains the body of the message. 
+    email_subject: This argument contains the subject line of the message. 
+    """
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",  
-            messages=[
-                {"role": "system", "content": "You are an expert email assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=500
+
+        gmail_sender = GmailEmailSender(user_id='user1')  # Unique ID per user
+        gmail_sender.send_email(
+        to=receiver,
+        subject= email_subject,
+        body=message_body
         )
-
-        gpt_reply = response.choices[0].message['content'].strip()
-        print("\n GPT Summary & Suggested Reply:")
-        print(gpt_reply)
-
+        return "Sent successfully"
     except Exception as e:
-        print("Error calling OpenAI GPT:", str(e))
+        
+        return "Send failed"
 
-def main():
-    creds = None
+Sent_Email_agent = Agent(
+    name="Sent Email agent",
+    instructions="Always respond in haiku form",
+    model=model,
+    tools=[Sent_Email],
+)
 
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    else:
-        flow = InstalledAppFlow.from_client_secrets_file('client1.json', SCOPES)
-        creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+history_tutor_agent = Agent(
+    name="History Tutor",
+    handoff_description="Specialist agent for historical questions",
+    instructions="You provide assistance with historical queries. Explain important events and context clearly.",
+        model=model,
 
-    service = build('gmail', 'v1', credentials=creds)
-    result = service.users().messages().list(userId='me', labelIds=['STARRED']).execute()
-    messages = result.get('messages', [])
+)
 
-    print(f"\n Number of starred emails: {len(messages)}\n")
+math_tutor_agent = Agent(
+    name="Math Tutor",
+    handoff_description="Specialist agent for math questions",
+    instructions="You provide help with math problems. Explain your reasoning at each step and include examples",
+    model=model,
 
-    for idx, message in enumerate(messages):
-        msg = service.users().messages().get(userId='me', id=message['id'], format='full').execute()
-        headers = msg['payload']['headers']
+)
+triage_agent = Agent(
+    name="Triage Agent",
+    instructions="You determine which agent to use based on the user's question",
+    model=model,
+    handoffs=[history_tutor_agent, math_tutor_agent, Sent_Email_agent]
+)
 
-        subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
-        sender = next((h['value'] for h in headers if h['name'] == 'From'), 'No Sender')
-        date = next((h['value'] for h in headers if h['name'] == 'Date'), 'No Date')
-        body = get_email_body(msg['payload'])
 
-        print(f"\n Email #{idx+1}")
-        print(f"Subject: {subject}")
-        print(f"From: {sender}")
-        print(f"Date: {date}")
-       
 
-        summarize_with_gpt(subject, sender, date, body)
-        print("=" * 80)
+set_tracing_disabled(disabled=True)
 
-if __name__ == '__main__':
-    main()
+async def main():
+# Run the agent synchronously
+    result = await Runner.run(triage_agent, "What is the capital of France?")
+    print(result.final_output)
+
+asyncio.run(main())
