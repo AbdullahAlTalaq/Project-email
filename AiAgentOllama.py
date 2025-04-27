@@ -91,4 +91,206 @@ agent_team.print_response("Write about Co-Ownership based on knowledge base, And
     #pprint(messages_in_session)
 
 
+"""
+import os
+import logging
+from typing import List, Optional
+from pathlib import Path
+import json
+
+from agno.agent import Agent
+from agno.tools.duckduckgo import DuckDuckGoTools
+from agno.models.ollama import Ollama
+from agno.tools import tool
+from agno.team.team import Team
+from agno.embedder.ollama import OllamaEmbedder
+from agno.vectordb.lancedb import LanceDb, SearchType
+from agno.knowledge.pdf import PDFKnowledgeBase, PDFReader
+from agno.playground import Playground, serve_playground_app
+from agno.storage.sqlite import SqliteStorage
+
+from rich.console import Console
+from GmailEmailSender import GmailEmailSender
+
+# ========= MEMORY SYSTEM (NEW) =========
+
+class UserMemoryManager:
+    def __init__(self):
+        self.user_profiles = {}
+    
+    def add_user_profile(self, user_id: str, profile: dict):
+        self.user_profiles[user_id] = profile
+    
+    def get_user_profile(self, user_id: str) -> Optional[dict]:
+        return self.user_profiles.get(user_id)
+
+# Instantiate memory manager
+memory_manager = UserMemoryManager()
+
+# ========= CONFIG =========
+
+agent_storage: str = "tmp/agents.db"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename='agent_system.log'
+)
+logger = logging.getLogger(__name__)
+console = Console()
+
+class Config:
+    BASE_DIR = Path(__file__).parent
+    FILES_DIR = BASE_DIR / "Files"
+    VECTOR_DB_PATH = BASE_DIR / "tmp" / "lancedb"
+    
+    PDF_PATH = FILES_DIR / "Career Co.pdf"
+    VECTOR_TABLE_NAME = "payslip"
+    EMBEDDER_MODEL = "openhermes"
+    
+    TEAM_LEADER_MODEL = "qwq"
+    EMAIL_AGENT_MODEL = "qwq"
+
+    with open('instructions.json', 'r') as file:
+        INSTRUCTIONS_PATH = json.load(file)
+
+# ========= TOOL =========
+
+@tool(show_result=True, stop_after_tool_call=True)
+def send_email(receiver: str, email_subject: str, message_body: str, sender_id: str = "user3") -> str:
+    """
+    Tool: send_email
+    Now uses memory to personalize emails.
+    """
+    try:
+        logger.info(f"Sending email to {receiver}")
+        gmail_sender = GmailEmailSender(user_id=sender_id)
+
+        # Get user profile from memory
+        user_profile = memory_manager.get_user_profile(sender_id)
+
+        if user_profile:
+            # Personalize message
+            signature = user_profile.get("signature", "")
+            message_body = f"{message_body}\n\n{signature}"
+        
+        gmail_sender.send_email(
+            to=receiver,
+            subject=email_subject,
+            body=message_body
+        )
+        logger.info("Email sent successfully")
+        return "Email sent successfully"
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        return f"Email sending failed: {str(e)}"
+
+# ========= FUNCTIONS =========
+
+def create_knowledge_base() -> PDFKnowledgeBase:
+    try:
+        knowledge_base = PDFKnowledgeBase(
+            path=str(Config.PDF_PATH),
+            vector_db=LanceDb(
+                uri=str(Config.VECTOR_DB_PATH),
+                table_name=Config.VECTOR_TABLE_NAME,
+                search_type=SearchType.hybrid,
+                embedder=OllamaEmbedder(id=Config.EMBEDDER_MODEL),
+            ),
+            reader=PDFReader(chunk=True),
+        )
+        logger.info("Knowledge base created successfully")
+        return knowledge_base
+    except Exception as e:
+        logger.error(f"Failed to create knowledge base: {str(e)}")
+        raise
+
+def create_agents(knowledge_base: PDFKnowledgeBase):
+    try:
+        email_agent = Agent(
+            name="Email Agent",
+            role="Send personalized emails based on user memory",
+            model=Ollama(id=Config.EMAIL_AGENT_MODEL),
+            knowledge=knowledge_base,
+            tools=[send_email, DuckDuckGoTools()],
+            add_history_to_messages=True,
+            instructions=[
+                "Use the send_email tool to send emails.",
+                "Before sending, ensure the email matches the sender's tone based on memory.",
+                "Use a formal tone for bosses, and friendly for colleagues, based on memory.",
+                "Attach the user's signature at the end of the message if available."
+            ],
+            markdown=True,
+            storage=SqliteStorage(
+                table_name="email_agent",
+                db_file=agent_storage,
+                auto_upgrade_schema=True,
+            ),
+            show_tool_calls=True,
+            num_history_responses=5,
+            add_name_to_instructions=True,
+            add_datetime_to_instructions=True,
+        )
+        logger.info("Agents created successfully")
+        return email_agent
+    except Exception as e:
+        logger.error(f"Failed to create agents: {str(e)}")
+        raise
+
+def create_team(email_agent: Agent) -> Team:
+    try:
+        agent_team = Team(
+            name="Research Team",
+            mode="coordinate",
+            model=Ollama(id=Config.TEAM_LEADER_MODEL),
+            members=[email_agent],
+            instructions=[f'{Config.INSTRUCTIONS_PATH}'],
+            show_tool_calls=True,
+            markdown=True,
+            add_datetime_to_instructions=True,
+        )
+        logger.info("Team created successfully")
+        return agent_team
+    except Exception as e:
+        logger.error(f"Failed to create team: {str(e)}")
+        raise
+
+# ========= MAIN =========
+
+try:
+    console.print("[bold green]Starting Agent System...[/bold green]")
+    
+    knowledge_base = create_knowledge_base()
+    email_agent = create_agents(knowledge_base)
+    agent_team = create_team(email_agent)
+
+    if agent_team.knowledge is not None:
+        console.print("[bold blue]Loading knowledge base...[/bold blue]")
+        agent_team.knowledge.load()
+        console.print("[bold green]Knowledge base loaded successfully[/bold green]")
+
+    # Add example user memory
+    memory_manager.add_user_profile(
+        user_id="user3",
+        profile={
+            "name": "Yahya Alsharif",
+            "position": "Project Manager",
+            "colleague_style": "Friendly and semi-formal",
+            "boss_style": "Very formal and structured",
+            "signature": "Best regards, Yahya"
+        }
+    )
+
+    # Create UI app
+    app = Playground(agents=[email_agent]).get_app(use_async=False)
+
+except Exception as e:
+    logger.critical(f"System failed: {str(e)}")
+    console.print(f"[bold red]Error: {str(e)}[/bold red]")
+
+if __name__ == "__main__":
+    serve_playground_app("Gmail_Agent_with_Memory:app", reload=True)
+
+"""
+
 
