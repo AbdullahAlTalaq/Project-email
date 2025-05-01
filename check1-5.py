@@ -1,3 +1,23 @@
+from contact_utils import get_email_by_name
+
+@tool(show_result=True, stop_after_tool_call=True)
+def Send_Email(receiver: str, email_subject: str, message_body: str) -> str:
+    """Send an email. 'receiver' can be a name (looked up in DB) or full email address."""
+    try:
+        if "@" not in receiver:
+            email = get_email_by_name(receiver)
+            if not email:
+                return f"Send failed: No email found for '{receiver}'"
+            receiver = email
+
+        gmail_sender = GmailEmailSender(user_id='user3')
+        gmail_sender.send_email(to=receiver, subject=email_subject, body=message_body)
+        return f"Sent successfully to {receiver}"
+    except Exception as e:
+        return f"Send failed: {e}"
+
+
+
 from agno.agent import Agent
 from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.models.ollama import Ollama
