@@ -1,3 +1,10 @@
+
+from contact_utils import create_contacts_table, add_contact
+
+create_contacts_table()
+add_contact("yahya", "y75910@gmail.com")
+add_contact("ali", "testaiagent6@gmail.com")
+
 from contact_utils import get_email_by_name
 
 @tool(show_result=True, stop_after_tool_call=True)
